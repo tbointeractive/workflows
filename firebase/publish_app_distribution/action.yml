@@ -1,0 +1,100 @@
+name: "Upload to Firebase App Distribution"
+
+inputs:
+  appId:
+    description: "App ID (e.g., 1:1234567890:android:abcdef123456)"
+    required: true
+  serviceCredentialsFile:
+    description: "Service credentials file"
+    required: false
+  serviceCredentialsFileContent:
+    description: "Content of service credentials file"
+    required: false
+  file:
+    description: "Artifact to upload (.apk or .ipa)"
+    required: true
+  groups:
+    description: "Distribution groups"
+    required: false
+  testers:
+    description: "Distribution testers"
+    required: false
+  debug:
+    description: "Print verbose log output"
+    required: false
+    default: "false"
+
+outputs:
+  FIREBASE_CONSOLE_URI:
+    description: "Firebase console URI for the release"
+    value: ${{ steps.distribute.outputs.FIREBASE_CONSOLE_URI }}
+  TESTING_URI:
+    description: "Testing URI for the release"
+    value: ${{ steps.distribute.outputs.TESTING_URI }}
+  BINARY_DOWNLOAD_URI:
+    description: "Binary download URI for the release"
+    value: ${{ steps.distribute.outputs.BINARY_DOWNLOAD_URI }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Install Firebase CLI
+      shell: bash
+      run: npm install -g firebase-tools
+
+    - name: Setup service credentials
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.serviceCredentialsFile }}" ]; then
+          echo "GOOGLE_APPLICATION_CREDENTIALS=${{ inputs.serviceCredentialsFile }}" >> $GITHUB_ENV
+        fi
+
+        if [ -n "${{ inputs.serviceCredentialsFileContent }}" ]; then
+          echo '${{ inputs.serviceCredentialsFileContent }}' > service_credentials_content.json
+          echo "GOOGLE_APPLICATION_CREDENTIALS=service_credentials_content.json" >> $GITHUB_ENV
+        fi
+
+    - name: Distribute to Firebase App Distribution
+      id: distribute
+      shell: bash
+      run: |
+        set -o pipefail
+
+        # Configure git safe directory
+        git config --global --add safe.directory $GITHUB_WORKSPACE
+
+        CMD="firebase appdistribution:distribute \"${{ inputs.file }}\" --app \"${{ inputs.appId }}\""
+
+        if [ -n "${{ inputs.groups }}" ]; then
+          CMD="$CMD --groups \"${{ inputs.groups }}\""
+        fi
+
+        if [ -n "${{ inputs.testers }}" ]; then
+          CMD="$CMD --testers \"${{ inputs.testers }}\""
+        fi  
+
+        if [ "${{ inputs.debug }}" = "true" ]; then
+          CMD="$CMD --debug"
+        fi
+
+        CMD="$CMD --release-notes \"$(git log -1 --pretty=short)\""
+
+        eval $CMD | while read -r line; do
+          echo "$line"
+          
+          if [[ $line == *"View this release in the Firebase console"* ]]; then
+            CONSOLE_URI=$(echo "$line" | sed -e 's/.*: //' -e 's/^ *//;s/ *$//')
+            echo "FIREBASE_CONSOLE_URI=$CONSOLE_URI" >> "$GITHUB_OUTPUT"
+          elif [[ $line == *"Share this release with testers who have access"* ]]; then
+            TESTING_URI=$(echo "$line" | sed -e 's/.*: //' -e 's/^ *//;s/ *$//')
+            echo "TESTING_URI=$TESTING_URI" >> "$GITHUB_OUTPUT"
+          elif [[ $line == *"Download the release binary"* ]]; then
+            BINARY_URI=$(echo "$line" | sed -e 's/.*: //' -e 's/^ *//;s/ *$//')
+            echo "BINARY_DOWNLOAD_URI=$BINARY_URI" >> "$GITHUB_OUTPUT"
+          fi
+        done
